@@ -73,7 +73,6 @@ impl VfsNodeOps for DirNode {
     fn get_attr(&self) -> VfsResult<VfsNodeAttr> {
         Ok(VfsNodeAttr::new_dir(4096, 0))
     }
-
     fn parent(&self) -> Option<VfsNodeRef> {
         self.parent.read().upgrade()
     }
@@ -96,25 +95,6 @@ impl VfsNodeOps for DirNode {
         } else {
             Ok(node)
         }
-    }
-
-    fn read_dir(&self, start_idx: usize, dirents: &mut [VfsDirEntry]) -> VfsResult<usize> {
-        let children = self.children.read();
-        let mut children = children.iter().skip(start_idx.max(2) - 2);
-        for (i, ent) in dirents.iter_mut().enumerate() {
-            match i + start_idx {
-                0 => *ent = VfsDirEntry::new(".", VfsNodeType::Dir),
-                1 => *ent = VfsDirEntry::new("..", VfsNodeType::Dir),
-                _ => {
-                    if let Some((name, node)) = children.next() {
-                        *ent = VfsDirEntry::new(name, node.get_attr().unwrap().file_type());
-                    } else {
-                        return Ok(i);
-                    }
-                }
-            }
-        }
-        Ok(dirents.len())
     }
 
     fn create(&self, path: &str, ty: VfsNodeType) -> VfsResult {
@@ -163,6 +143,58 @@ impl VfsNodeOps for DirNode {
         } else {
             self.remove_node(name)
         }
+    }
+
+    fn read_dir(&self, start_idx: usize, dirents: &mut [VfsDirEntry]) -> VfsResult<usize> {
+        let children = self.children.read();
+        let mut children = children.iter().skip(start_idx.max(2) - 2);
+        for (i, ent) in dirents.iter_mut().enumerate() {
+            match i + start_idx {
+                0 => *ent = VfsDirEntry::new(".", VfsNodeType::Dir),
+                1 => *ent = VfsDirEntry::new("..", VfsNodeType::Dir),
+                _ => {
+                    if let Some((name, node)) = children.next() {
+                        *ent = VfsDirEntry::new(name, node.get_attr().unwrap().file_type());
+                    } else {
+                        return Ok(i);
+                    }
+                }
+            }
+        }
+        Ok(dirents.len())
+    }
+
+    fn rename(&self, src_path: &str, dst_path: &str) -> VfsResult {
+        log::debug!("rename at ramfs: {} to {}", src_path, dst_path);
+
+        fn split_parent_child(path: &str) -> (Option<&str>, &str) {
+            let trimmed = path.trim_matches('/');
+            if trimmed.is_empty() {
+                return (None, ".");
+            }
+            trimmed.rsplit_once('/').map_or((None, trimmed), |(parent, child)| {
+                if parent.is_empty() {
+                    (None, child)
+                } else {
+                    (Some(parent), child)
+                }
+            })
+        }
+
+        let (_src_parent, _src_name) = split_parent_child(src_path);
+        let (_dst_parent, dst_name) = split_parent_child(dst_path);
+
+        let node = self.this.upgrade().expect("this node not found");
+        let old_node = node.clone().lookup(src_path)?;
+        node.as_any()
+            .downcast_ref::<DirNode>()
+            .expect("not a dir")
+            .children
+            .write()
+            .insert(dst_name.into(), old_node);
+
+        Ok(())
+
     }
 
     axfs_vfs::impl_vfs_dir_default! {}
